@@ -109,7 +109,7 @@ textarea{min-height:56px;resize:vertical}
   <div class="htop">
     <div class="brand">
       <span class="badge">ALLIANCE</span>
-      <div><div class="htitle">Trình Mẫu Vật Liệu</div><div class="hsub" id="hsub">— · —</div></div>
+      <div><div class="htitle">Trình Mẫu Vật Liệu</div></div>
     </div>
     <div class="hclock"><b id="clk">--:--</b><div id="dt">--</div></div>
   </div>
@@ -126,21 +126,10 @@ textarea{min-height:56px;resize:vertical}
 
 
 <div class="sect">
-  <h2>1/ Nạp BOQ &amp; lọc vật liệu</h2>
-  <div class="sbody">
-    <div class="drop" id="drop" onclick="document.getElementById('boqFile').click()">
-      📥 Kéo-thả hoặc bấm để chọn file BOQ (.xlsx)
-      <div class="hint">App tự đọc mã vật liệu (RM-xxx, PT-xxx…) và nhóm theo mục trong BOQ</div>
-    </div>
-    <input type="file" id="boqFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="onFile(event)">
-    <div id="sumChips" class="chips"></div>
-  </div>
-</div>
-
-<div class="sect">
-  <h2>2/ Đệ trình mẫu</h2>
+  <h2>Đệ trình mẫu</h2>
   <div class="sbody" style="padding:8px 0">
-    <div id="list"><div class="empty">Chưa có vật liệu. Hãy nạp BOQ ở trên ☝️</div></div>
+    <div id="sumChips" class="chips" style="padding:0 12px 6px"></div>
+    <div id="list"><div class="empty">Chưa có vật liệu. Bấm «＋ Dự án» để tạo dự án và nạp BOQ.</div></div>
   </div>
 </div>
 
@@ -203,37 +192,40 @@ setInterval(tick,1000);tick();
 /* projects */
 function renderProjSel(){const s=document.getElementById('projSel');s.innerHTML='';
   Object.keys(DB.projects).forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=DB.projects[k].name;if(k===DB.cur)o.selected=true;s.appendChild(o);});
-  const p=P();document.getElementById('hsub').textContent=p.name+' · '+(p.code||'');}
+}
 function switchProj(k){DB.cur=k;save();renderAll();}
 function newProj(){
   modal(`<h3>Tạo dự án / gói phát sinh</h3>
    <div class="mrow"><label class="fl">Tên dự án/gói</label><input id="np_name" placeholder="VD: Clubhouse GĐ3 — Lobby"></div>
    <div class="mrow"><label class="fl">Mã dự án (project no.)</label><input id="np_code" placeholder="VD: H2201-P3"></div>
-   <div class="note note-i" style="margin:0 0 12px">Sẽ tạo thêm 1 sheet mới (đầy đủ tiêu đề) trên Google Sheet cho dự án này.</div>
+   <div class="mrow"><label class="fl">File BOQ (.xlsx)</label><input type="file" id="np_boq" accept=".xlsx,.xls,.csv"></div>
+   <div class="note note-i" style="margin:0 0 12px">App sẽ đọc BOQ, lọc mã vật liệu và đổ TOÀN BỘ về 1 sheet mới (đầy đủ tiêu đề) trên Google Sheet.</div>
    <div class="savebar"><button class="btn btn-l" onclick="closeModal()">Hủy</button>
-   <button class="btn btn-g" style="flex:1" onclick="createProj()">Tạo dự án</button></div>`);}
-function createProj(){const name=val('np_name').trim();if(!name){alert('Nhập tên dự án');return;}
-  const id='p'+Date.now();DB.projects[id]={name,code:val('np_code').trim(),items:[],sub:{}};DB.cur=id;save();
-  // tạo sheet mới trên Google Sheet
-  fetch(GS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'create',project:name})}).catch(()=>{});
-  closeModal();renderAll();
-  alert('Đã tạo dự án "'+name+'" và thêm sheet mới trên Google Sheet. Hãy nạp BOQ cho dự án này.');}
+   <button class="btn btn-g" style="flex:1" id="np_btn" onclick="createProj(this)">Tạo dự án</button></div>`);}
+async function createProj(btn){if(BUSY)return;const name=val('np_name').trim();if(!name){alert('Nhập tên dự án');return;}
+  const fi=document.getElementById('np_boq');const file=fi&&fi.files[0];
+  lock(btn,file?'⏳ Đang đọc BOQ...':'⏳ Đang tạo...');
+  let items=[];
+  try{if(file){items=mergeSpec(await readBOQFile(file));if(!items.length){alert('Không tìm thấy mã vật liệu nào trong BOQ. Kiểm tra lại file.');unlock(btn);return;}}}
+  catch(e){alert('Không đọc được BOQ: '+e);unlock(btn);return;}
+  const id='p'+Date.now();DB.projects[id]={name,code:val('np_code').trim(),items:items,sub:{}};DB.cur=id;save();
+  try{
+    if(items.length){if(btn)btn.innerHTML='⏳ Đang đổ '+items.length+' mã lên Google Sheet...';await pushAllItems(items);}
+    else{await fetch(GS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'create',project:name})});}
+  }catch(e){}
+  unlock(btn);closeModal();renderAll();
+  alert(items.length?('✅ Đã tạo dự án "'+name+'", nạp '+items.length+' mã và đổ toàn bộ về Google Sheet.'):('Đã tạo dự án "'+name+'" (chưa có BOQ).'));}
 
 /* BOQ parse */
 const SECT=/^\s*(\d{3})\s*[-–—]\s*(.+)$/;
 const CODE=/\b([A-Z]{2,4}-\d{2,4}(?:\.[A-Z0-9]+)?)\b/;
-function onFile(e){const f=e.target.files[0];if(f)readBOQ(f);}
-['dragover','dragleave','drop'].forEach(ev=>{const d=document.getElementById('drop');
-  d.addEventListener(ev,e=>{e.preventDefault();if(ev==='drop'&&e.dataTransfer.files[0])readBOQ(e.dataTransfer.files[0]);});});
-function readBOQ(f){const r=new FileReader();
-  r.onload=ev=>{const wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'});
-    const items=parseWB(wb);
-    if(!items.length){alert('Không tìm thấy mã vật liệu nào (RM-xxx / PT-xxx…). Kiểm tra lại file BOQ.');return;}
-    const sm=specMap();
-    items.forEach(it=>{const s=sm[it.code];if(s){it.manufacturer=s.manufacturer;it.contact=s.contact;it.email=s.email;it.phone=s.phone;it.specs=s.specs;it.area=s.area;if(!it.description)it.description=s.description;}else{it.specs=it.specs||{};}});
-    P().items=items;save();renderAll();
-    alert('Đã đọc '+items.length+' mã vật liệu từ BOQ.');};
-  r.readAsArrayBuffer(f);}
+function readBOQFile(file){return new Promise((res,rej)=>{const r=new FileReader();
+  r.onload=ev=>{try{const wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'});res(parseWB(wb));}catch(e){rej(e);}};
+  r.onerror=()=>rej('Không đọc được file');r.readAsArrayBuffer(file);});}
+function mergeSpec(items){const sm=specMap();items.forEach(it=>{const s=sm[it.code];if(s){it.manufacturer=s.manufacturer;it.contact=s.contact;it.email=s.email;it.phone=s.phone;it.specs=s.specs;it.area=s.area;if(!it.description)it.description=s.description;}else{it.specs=it.specs||{};}});return items;}
+async function pushAllItems(items){const payloadRows=[];for(const x of items){const p=rowPayload(x);p.images=await idbGet(imgKey(x.code));payloadRows.push(p);}
+  const payload={action:'submit',project:P().name,projectCode:P().code||'',reporter:'Mai Văn Minh',sentAt:new Date().toISOString(),rows:payloadRows};
+  await fetch(GS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});}
 function parseWB(wb){let items=[],seen={};
   const na=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase().replace(/\s+/g,' ').trim();
   const DESC_PRI=[t=>t.includes('dien giai')&&t.includes('alliance'),t=>t.includes('dien giai')&&(t.includes('chu dau tu')||t.includes('cdt')),t=>t.includes('lumpsum'),t=>t.includes('noi dung'),t=>t.includes('quy cach'),t=>t.includes('mo ta'),t=>t.includes('dien giai')];
@@ -292,7 +284,7 @@ function renderSummary(){const it=P().items,box=document.getElementById('sumChip
 /* list */
 function renderAll(){renderProjSel();renderList();renderSummary();renderCounter();}
 function renderList(){const it=P().items,box=document.getElementById('list');
-  if(!it.length){box.innerHTML='<div class="empty">Chưa có vật liệu. Hãy nạp BOQ ở trên ☝️</div>';return;}
+  if(!it.length){box.innerHTML='<div class="empty">Chưa có vật liệu. Bấm «＋ Dự án» để tạo dự án và nạp BOQ.</div>';return;}
   const groups={};it.forEach(x=>{if(FILTER&&x.section!==FILTER)return;(groups[x.section]=groups[x.section]||[]).push(x);});
   let h='';Object.keys(groups).forEach(sec=>{
     h+=`<div class="grp"><h3>${sec} · ${groups[sec].length} mã</h3>`;
@@ -414,9 +406,10 @@ async function submitAll(btn){if(BUSY)return;const rows=pending();
   try{const payloadRows=[];for(const x of rows){const p=rowPayload(x);p.images=await idbGet(imgKey(x.code));payloadRows.push(p);}
     const payload={action:'submit',project:P().name,projectCode:P().code||'',reporter:'Mai Văn Minh',sentAt:new Date().toISOString(),rows:payloadRows};
     await fetch(GS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
-    alert('✅ Đã gửi '+rows.length+' mục về Google Sheet (sheet: '+P().name+').');}
-  catch(e){alert('Không gửi được. Kiểm tra kết nối mạng.');}
-  finally{unlock(btn);}}
+    if(btn)btn.innerHTML='✅ Đã gửi';
+    alert('✅ Đã gửi '+rows.length+' mục về Google Sheet (sheet: '+P().name+').');
+    setTimeout(()=>unlock(btn),1500);}
+  catch(e){alert('Không gửi được. Kiểm tra kết nối mạng.');unlock(btn);}}
 
 /* export Excel từ sheet dự án */
 function sheetSafe(n){return String(n||'Sheet').replace(/[\[\]\*\/\\\?:]/g,' ').slice(0,28)||'Sheet';}
