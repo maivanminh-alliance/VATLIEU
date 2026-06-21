@@ -144,8 +144,8 @@ textarea{min-height:56px;resize:vertical}
   </div>
 </div>
 
-<button class="footbtn" onclick="submitAll()">📤 GỬI BÁO CÁO TRÌNH MẪU</button>
-<button class="footbtn" style="background:linear-gradient(180deg,#3a7a3a,#16a34a);margin-top:-6px" onclick="exportExcel()">⬇️ Xuất Excel</button>
+<button class="footbtn" onclick="submitAll(this)">📤 GỬI BÁO CÁO TRÌNH MẪU</button>
+<button class="footbtn" style="background:linear-gradient(180deg,#3a7a3a,#16a34a);margin-top:-6px" onclick="exportExcel(this)">⬇️ Xuất Excel</button>
 <div class="foot">© 2026 Mai Văn Minh. All rights reserved.</div>
 </div>
 
@@ -391,6 +391,11 @@ function saveSpec(c){const x=P().items.find(i=>i.code===c);x.description=val('es
   const ks=document.querySelectorAll('#es_rows .sk'),vs=document.querySelectorAll('#es_rows .sv');const sp={};
   ks.forEach((e,i)=>{if(e.value.trim())sp[e.value.trim()]=vs[i].value.trim();});x.specs=sp;save();closeModal();renderList();}
 
+/* lock chống bấm nhiều lần */
+let BUSY=false;
+function lock(btn,txt){BUSY=true;if(btn){btn.dataset.html=btn.innerHTML;btn.disabled=true;btn.style.opacity='.55';btn.style.cursor='not-allowed';if(txt)btn.innerHTML=txt;}}
+function unlock(btn){BUSY=false;if(btn){btn.disabled=false;btn.style.opacity='';btn.style.cursor='';if(btn.dataset.html){btn.innerHTML=btn.dataset.html;delete btn.dataset.html;}}}
+
 /* submit */
 function specText(x){const k=Object.keys(x.specs||{});return k.map(n=>n+': '+x.specs[n]).join('; ');}
 function rowPayload(x){const a=subOf(x.code).attempts;const l=a[a.length-1];const g=i=>a[i]||{};
@@ -403,28 +408,31 @@ function rowPayload(x){const a=subOf(x.code).attempts;const l=a[a.length-1];cons
     trangThai:l?STATUS[l.status].c:'',tinhTrang:l?(l.status==='A'?'ĐÃ DUYỆT':l.status==='OS'?'CHỜ LÀM RÕ':'ĐANG TRÌNH'):'',
     ghiChu:l?(l.comment||''):''});}
 function pending(){return P().items.filter(x=>isSkip(x)||subOf(x.code).attempts.length>0);}
-async function submitAll(){const rows=pending();
+async function submitAll(btn){if(BUSY)return;const rows=pending();
   if(!rows.length){alert('Chưa có mục nào được trình (chọn trạng thái + Lưu lần).');return;}
-  const payloadRows=[];for(const x of rows){const p=rowPayload(x);p.images=await idbGet(imgKey(x.code));payloadRows.push(p);}
-  const payload={action:'submit',project:P().name,projectCode:P().code||'',reporter:'Mai Văn Minh',
-    sentAt:new Date().toISOString(),rows:payloadRows};
-  try{await fetch(GS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
+  lock(btn,'⏳ Đang gửi báo cáo...');
+  try{const payloadRows=[];for(const x of rows){const p=rowPayload(x);p.images=await idbGet(imgKey(x.code));payloadRows.push(p);}
+    const payload={action:'submit',project:P().name,projectCode:P().code||'',reporter:'Mai Văn Minh',sentAt:new Date().toISOString(),rows:payloadRows};
+    await fetch(GS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
     alert('✅ Đã gửi '+rows.length+' mục về Google Sheet (sheet: '+P().name+').');}
-  catch(e){alert('Không gửi được. Kiểm tra kết nối mạng.');}}
+  catch(e){alert('Không gửi được. Kiểm tra kết nối mạng.');}
+  finally{unlock(btn);}}
 
 /* export Excel từ sheet dự án */
 function sheetSafe(n){return String(n||'Sheet').replace(/[\[\]\*\/\\\?:]/g,' ').slice(0,28)||'Sheet';}
-function exportExcel(){const cb='__exp'+Date.now();
+function exportExcel(btn){if(BUSY)return;lock(btn,'⏳ Đang tải dữ liệu...');const cb='__exp'+Date.now();
+  let finished=false;const done=()=>{if(finished)return;finished=true;clearTimeout(to);delete window[cb];const el=document.getElementById('jp_'+cb);if(el)el.remove();unlock(btn);};
+  const to=setTimeout(()=>{if(!finished){alert('Quá thời gian chờ. Kiểm tra mạng / đã deploy bản mới chưa.');done();}},20000);
   window[cb]=function(res){try{
       if(!res||!res.ok){alert('Không lấy được dữ liệu sheet: '+((res&&res.error)||'?'));return;}
       const aoa=[res.header].concat(res.rows||[]);
       const ws=XLSX.utils.aoa_to_sheet(aoa);const wb=XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb,ws,sheetSafe(P().name));
       XLSX.writeFile(wb,'TrinhMau_'+(P().code||P().name)+'_'+today()+'.xlsx');
-    }finally{delete window[cb];const el=document.getElementById('jp_'+cb);if(el)el.remove();}};
+    }finally{done();}};
   const sc=document.createElement('script');sc.id='jp_'+cb;
   sc.src=GS_URL+(GS_URL.indexOf('?')<0?'?':'&')+'action=export&project='+encodeURIComponent(P().name)+'&callback='+cb;
-  sc.onerror=function(){alert('Không gọi được Apps Script. Kiểm tra đã deploy bản mới chưa.');delete window[cb];sc.remove();};
+  sc.onerror=function(){alert('Không gọi được Apps Script. Kiểm tra đã deploy bản mới chưa.');done();};
   document.body.appendChild(sc);}
 
 /* status views */
