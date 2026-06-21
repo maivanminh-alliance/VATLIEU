@@ -94,6 +94,13 @@ textarea{min-height:56px;resize:vertical}
 .mcard h3{margin:0 0 12px}.mrow{margin-bottom:12px}
 .tag{display:inline-block;font-size:11px;background:#eef4ff;color:#1c4fa3;border-radius:6px;padding:2px 7px;margin:2px 4px 2px 0}
 .empty{padding:30px;text-align:center;color:var(--mut)}
+/* skip / filter */
+.s-skip{background:#e5e7eb;color:#6b7280}
+.dcard.skip b{color:#6b7280}
+.skipnote{margin-top:10px;background:#f3f4f6;border:1px solid #d1d5db;color:#4b5563;border-radius:8px;padding:10px 12px;font-weight:700;font-size:13px}
+.chip{cursor:pointer;user-select:none}
+.chip.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+.chip.active b{color:#fff}
 </style>
 </head>
 <body>
@@ -173,6 +180,9 @@ function idb(){return new Promise((res,rej)=>{if(_idb)return res(_idb);
 async function idbSet(k,v){const d=await idb();return new Promise((res,rej)=>{const t=d.transaction('imgs','readwrite');t.objectStore('imgs').put(v,k);t.oncomplete=()=>res();t.onerror=()=>rej(t.error);});}
 async function idbGet(k){const d=await idb();return new Promise(res=>{const t=d.transaction('imgs','readonly');const q=t.objectStore('imgs').get(k);q.onsuccess=()=>res(q.result||[]);q.onerror=()=>res([]);});}
 function imgKey(c){return DB.cur+'|'+c;}
+let FILTER=null;
+function setFilter(f){FILTER=f;renderList();renderSummary();}
+function isSkip(x){const q=parseFloat(String(x.qty||'').replace(/[, ]/g,''));return x.qty!==''&&x.qty!=null&&!isNaN(q)&&q===0;}
 
 function load(){try{const d=JSON.parse(localStorage.getItem(LS));if(d&&d.projects)return d;}catch(e){}return seed();}
 function seed(){return {gsUrl:GS_URL,cur:'clubhouse',projects:{clubhouse:{name:'Clubhouse GĐ2 — Restroom/Public Toilet',code:'H2201',items:specToItems(SPEC_DEFAULT),sub:{}}}};}
@@ -224,76 +234,105 @@ function readBOQ(f){const r=new FileReader();
     P().items=items;save();renderAll();
     alert('Đã đọc '+items.length+' mã vật liệu từ BOQ.');};
   r.readAsArrayBuffer(f);}
-function parseWB(wb){let items=[],section='(Chưa phân mục)',seen={};
+function parseWB(wb){let items=[],seen={};
+  const na=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase().replace(/\s+/g,' ').trim();
+  const DESC_PRI=[t=>t.includes('dien giai')&&t.includes('alliance'),t=>t.includes('dien giai')&&(t.includes('chu dau tu')||t.includes('cdt')),t=>t.includes('lumpsum'),t=>t.includes('noi dung'),t=>t.includes('quy cach'),t=>t.includes('mo ta'),t=>t.includes('dien giai')];
+  const isQty=t=>/khoi luong|so luong|quantity|q'?ty/.test(t)||t==='kl'||t==='klg';
+  const isUnit=t=>t==='don vi'||t==='dvt'||t==='unit';
+  const isCode=t=>t==='ma'||t==='code'||t.includes('ma hieu')||t.includes('ma vl')||t.includes('ma vat');
+  const isSect=t=>t.includes('hang muc')||t.includes('chuong')||t==='phan';
+  const ANYH=t=>/ma |^ma$|code|noi dung|quy cach|dien giai|mo ta|khoi luong|don vi|dvt|lumpsum|stt/.test(t);
   wb.SheetNames.forEach(sn=>{
     const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,raw:false,defval:''});
-    rows.forEach(r=>{
-      const cells=r.map(c=>c==null?'':String(c).trim());
-      const joined=cells.join(' ').replace(/\s+/g,' ').trim();
-      const cm=joined.match(CODE),sm=joined.match(SECT);
-      if(sm&&!cm){section=sm[1]+' - '+sm[2].trim().toUpperCase().slice(0,40);return;}
-      if(cm){const code=cm[1];if(seen[code])return;seen[code]=1;
-        let desc='';cells.forEach(c=>{if(c&&c!==code&&!/^[\d.,%]+$/.test(c)&&!SECT.test(c)&&c.length>desc.length)desc=c;});
-        let qty='';cells.forEach(c=>{if(/^\d[\d.,]*$/.test(c)&&c.length<8)qty=c;});
-        let unit='';cells.forEach(c=>{if(c&&c!==code&&c.length<=5&&/^[A-Za-z][A-Za-z0-9²³.\/µ]{0,4}$/.test(c)&&!/^\d/.test(c))unit=c;});
-        const grp=(section==='(Chưa phân mục)')?('Nhóm '+code.split('-')[0]):section;items.push({code,section:grp,description:desc,qty,unit,specs:{}});}
-    });
+    let hr=-1,map={};
+    for(let i=0;i<Math.min(rows.length,25);i++){
+      const H=rows[i].map(c=>na(c));let hit=H.filter(ANYH).length;
+      if(hit>=2){hr=i;
+        H.forEach((c,idx)=>{if(map.code===undefined&&isCode(c))map.code=idx;
+          if(map.qty===undefined&&isQty(c))map.qty=idx;
+          if(map.unit===undefined&&isUnit(c))map.unit=idx;
+          if(map.sect===undefined&&isSect(c))map.sect=idx;});
+        for(const test of DESC_PRI){let fo=-1;H.forEach((c,idx)=>{if(fo<0&&c&&test(c))fo=idx;});if(fo>=0){map.desc=fo;break;}}
+        break;}
+    }
+    const start=hr>=0?hr+1:0;
+    for(let i=start;i<rows.length;i++){
+      const cells=rows[i].map(c=>c==null?'':String(c).trim());
+      const joined=cells.join(' ').replace(/\s+/g,' ').trim();if(!joined)continue;
+      let desc=(map.desc!==undefined?cells[map.desc]:'')||'';
+      let code='';
+      if(map.code!==undefined){const m=String(cells[map.code]).match(CODE);if(m)code=m[1];}
+      if(!code){const m=String(desc).match(CODE);if(m)code=m[1];}
+      if(!code){const m=joined.match(CODE);if(m)code=m[1];}
+      if(!code)continue;if(seen[code])continue;seen[code]=1;
+      if(!desc){cells.forEach(c=>{if(c&&c!==code&&!/^[\d.,%]+$/.test(c)&&c.length>desc.length)desc=c;});}
+      let qty=(map.qty!==undefined?cells[map.qty]:'')||'';
+      if(qty===''){cells.forEach(c=>{if(/^\d[\d.,]*$/.test(c)&&c.length<10)qty=c;});}
+      let unit=(map.unit!==undefined?cells[map.unit]:'')||'';
+      let section=(map.sect!==undefined&&cells[map.sect])?cells[map.sect].toUpperCase().slice(0,40):('Nhóm '+code.split('-')[0]);
+      items.push({code,section,description:desc,qty,unit,specs:{}});
+    }
   });
   return items;}
 
 /* counters + summary */
-function renderCounter(){const it=P().items,sub=P().sub;let tot=0,c={A:0,B:0,C:0,OS:0};
-  it.forEach(x=>{const l=latest(x.code);if(l){tot++;c[l.status]=(c[l.status]||0)+1;}});
-  const todo=it.length-tot;
+function renderCounter(){const it=P().items;let tot=0,skip=0,c={A:0,B:0,C:0,OS:0};
+  it.forEach(x=>{if(isSkip(x)){skip++;return;}const l=latest(x.code);if(l){tot++;c[l.status]=(c[l.status]||0)+1;}});
+  const todo=it.length-skip-tot;
   document.getElementById('dash').innerHTML=
-   card('tot','Tổng đã trình',tot)+card('A','Code A',c.A)+card('B','Code B',c.B)+card('C','Code C',c.C)+card('OS','Code O/S',c.OS)+card('todo','Chưa trình',todo);}
+   card('tot','Tổng đã trình',tot)+card('A','Code A',c.A)+card('B','Code B',c.B)+card('C','Code C',c.C)+card('OS','Code O/S',c.OS)+card('todo','Chưa trình',todo)+card('skip','Không làm',skip);}
 function card(cl,lbl,n){return `<div class="dcard ${cl}"><b>${n}</b><span>${lbl}</span></div>`;}
 function renderSummary(){const it=P().items,box=document.getElementById('sumChips');
   if(!it.length){box.innerHTML='';return;}
   const by={};it.forEach(x=>by[x.section]=(by[x.section]||0)+1);
-  let h=`<span class="chip">Tổng: <b>${it.length}</b> mã</span>`;
-  Object.keys(by).forEach(s=>h+=`<span class="chip">${s}: <b>${by[s]}</b></span>`);
+  let h=`<span class="chip ${FILTER===null?'active':''}" onclick="setFilter(null)">Tất cả: <b>${it.length}</b> mã</span>`;
+  Object.keys(by).forEach(s=>h+=`<span class="chip ${FILTER===s?'active':''}" onclick="setFilter('${s.replace(/'/g,"\\'")}')">${esc(s)}: <b>${by[s]}</b></span>`);
   box.innerHTML=h;}
 
 /* list */
 function renderAll(){renderProjSel();renderList();renderSummary();renderCounter();}
 function renderList(){const it=P().items,box=document.getElementById('list');
   if(!it.length){box.innerHTML='<div class="empty">Chưa có vật liệu. Hãy nạp BOQ ở trên ☝️</div>';return;}
-  const groups={};it.forEach(x=>{(groups[x.section]=groups[x.section]||[]).push(x);});
+  const groups={};it.forEach(x=>{if(FILTER&&x.section!==FILTER)return;(groups[x.section]=groups[x.section]||[]).push(x);});
   let h='';Object.keys(groups).forEach(sec=>{
     h+=`<div class="grp"><h3>${sec} · ${groups[sec].length} mã</h3>`;
     groups[sec].forEach(x=>h+=itemHTML(x));h+='</div>';});
   box.innerHTML=h;it.forEach(x=>renderThumbs(x.code));}
 function roundsToShow(c){const a=subOf(c).attempts;if(a.length&&a[a.length-1].status==='A')return a.length;return Math.min(3,a.length+1);}
-function itemHTML(x){const l=latest(x.code);const a=subOf(x.code).attempts;
-  const stCls=l?('s-'+l.status):'s-none';const lbl=l?(STATUS[l.status].c+' · L'+a.length):'Chưa trình';
-  let specRows='';const keys=Object.keys(x.specs||{});
-  if(keys.length)specRows='<div class="specbox"><table>'+keys.map(k=>`<tr><td class="k">${k}</td><td>${esc(x.specs[k])}</td></tr>`).join('')+'</table></div>';
-  else specRows='<div class="hint" style="margin-top:6px">Chưa có đặc tính — bấm «Sửa spec» để bổ sung.</div>';
-  let rounds='';const N=roundsToShow(x.code);
-  for(let r=0;r<N;r++)rounds+=roundHTML(x.code,r);
-  return `<div class="item" id="it_${x.code}">
-   <div class="ihead" onclick="toggle('${x.code}')">
-     <span class="icode">${x.code}</span><span class="idesc">${esc(x.description||'')}</span>
-     <span class="stat ${stCls}">${lbl}</span><span class="chev">▶</span>
-   </div>
-   <div class="ibody">
-     <div class="kv">
+function itemHTML(x){const skip=isSkip(x);const l=latest(x.code);const a=subOf(x.code).attempts;
+  const stCls=skip?'s-skip':(l?('s-'+l.status):'s-none');const lbl=skip?'KHÔNG LÀM':(l?(STATUS[l.status].c+' · L'+a.length):'Chưa trình');
+  const keys=Object.keys(x.specs||{});
+  const specRows=keys.length?('<div class="specbox"><table>'+keys.map(k=>`<tr><td class="k">${k}</td><td>${esc(x.specs[k])}</td></tr>`).join('')+'</table></div>'):'<div class="hint" style="margin-top:6px">Không có spec gốc cho mã này.</div>';
+  let body;
+  if(skip){
+    body=`<div class="kv">
        <div class="k">Chủng loại</div><div>${esc(x.section)}</div>
-       <div class="k">Vị trí (GĐ2)</div><div>${esc(x.area||'-')}</div>
+       <div class="k">Khối lượng BOQ</div><div>${esc(x.qty||'0')} ${esc(x.unit||'')}</div>
+     </div>
+     <div class="skipnote">⛔ KHÔNG LÀM — do khối lượng BOQ = 0</div>`;
+  }else{
+    let rounds='';const N=roundsToShow(x.code);for(let r=0;r<N;r++)rounds+=roundHTML(x.code,r);
+    body=`<div class="kv">
+       <div class="k">Chủng loại</div><div>${esc(x.section)}</div>
        <div class="k">Khối lượng BOQ</div><div>${esc(x.qty||'-')} ${esc(x.unit||'')}</div>
        <div class="k">Nhà sản xuất</div><div>${esc(x.manufacturer||'-')}</div>
        <div class="k">Liên hệ</div><div>${esc(x.contact||'-')} ${x.phone?('· '+esc(x.phone)):''} ${x.email?('· '+esc(x.email)):''}</div>
      </div>
-     <label class="fl">Thông số kỹ thuật (spec) <a style="float:right;color:var(--blue);cursor:pointer" onclick="editSpec('${x.code}')">Sửa spec</a></label>
+     <label class="fl">Thông số kỹ thuật (spec gốc)</label>
      ${specRows}
      <label class="fl" style="margin-top:14px">Hình ảnh mẫu đi trình</label>
      <div class="thumbs" id="th_${x.code}"></div>
      <input type="file" id="ph_${x.code}" accept="image/*" capture="environment" multiple style="display:none" onchange="addPhoto('${x.code}',event)">
      <button class="btn btn-l" type="button" onclick="document.getElementById('ph_${x.code}').click()">📷 Chụp / chọn ảnh</button>
      <label class="fl" style="margin-top:16px">Các lần trình mẫu (tới khi đạt Code A)</label>
-     ${rounds}
-   </div></div>`;}
+     ${rounds}`;
+  }
+  return `<div class="item" id="it_${x.code}">
+   <div class="ihead" onclick="toggle('${x.code}')">
+     <span class="icode">${x.code}</span><span class="idesc">${esc(x.description||'')}</span>
+     <span class="stat ${stCls}">${lbl}</span><span class="chev">▶</span>
+   </div>
+   <div class="ibody">${body}</div></div>`;}
 function roundHTML(c,r){const a=subOf(c).attempts;const at=a[r];const done=at&&at.status==='A';
   const st=at?at.status:null;
   return `<div class="round ${done?'done':''}" id="rd_${c}_${r}" data-st="${st||''}">
@@ -354,17 +393,16 @@ function saveSpec(c){const x=P().items.find(i=>i.code===c);x.description=val('es
 
 /* submit */
 function specText(x){const k=Object.keys(x.specs||{});return k.map(n=>n+': '+x.specs[n]).join('; ');}
-function rowPayload(x){const a=subOf(x.code).attempts;const l=a[a.length-1];
-  const g=i=>a[i]||{};
-  return {code:x.code,chungLoai:x.section,specText:specText(x),dienGiai:x.description||'',
-    viTri:x.area||'',donVi:x.unit||'',khoiLuong:x.qty||'',
-    images:[],
+function rowPayload(x){const a=subOf(x.code).attempts;const l=a[a.length-1];const g=i=>a[i]||{};
+  const base={code:x.code,chungLoai:x.section,specText:specText(x),dienGiai:x.description||'',viTri:x.area||'',donVi:x.unit||'',khoiLuong:x.qty||'',images:[]};
+  if(isSkip(x))return Object.assign(base,{khoiLuong:x.qty||'0',lan1Ngay:'',lan1Code:'',lan2Ngay:'',lan2Code:'',lan3Ngay:'',lan3Code:'',trangThai:'',tinhTrang:'KHÔNG LÀM',ghiChu:'Không làm do khối lượng = 0'});
+  return Object.assign(base,{
     lan1Ngay:g(0).date||'',lan1Code:a[0]?STATUS[a[0].status].c:'',
     lan2Ngay:g(1).date||'',lan2Code:a[1]?STATUS[a[1].status].c:'',
     lan3Ngay:g(2).date||'',lan3Code:a[2]?STATUS[a[2].status].c:'',
     trangThai:l?STATUS[l.status].c:'',tinhTrang:l?(l.status==='A'?'ĐÃ DUYỆT':l.status==='OS'?'CHỜ LÀM RÕ':'ĐANG TRÌNH'):'',
-    ghiChu:l?(l.comment||''):''};}
-function pending(){return P().items.filter(x=>subOf(x.code).attempts.length>0);}
+    ghiChu:l?(l.comment||''):''});}
+function pending(){return P().items.filter(x=>isSkip(x)||subOf(x.code).attempts.length>0);}
 async function submitAll(){const rows=pending();
   if(!rows.length){alert('Chưa có mục nào được trình (chọn trạng thái + Lưu lần).');return;}
   const payloadRows=[];for(const x of rows){const p=rowPayload(x);p.images=await idbGet(imgKey(x.code));payloadRows.push(p);}
